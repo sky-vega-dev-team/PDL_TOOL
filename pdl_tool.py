@@ -573,6 +573,25 @@ def reboot_menu(pdl, parts):
     return False
 
 
+def _print_device_header(info):
+    """Show the phone info (read once at startup) right-aligned at the top of the menu."""
+    import shutil
+    w = shutil.get_terminal_size(fallback=(80, 24)).columns
+    if info:
+        lines = [
+            f'[기기] 모델 {info["model"]}   바이너리 {info["binary"]}',
+            f'빌드 {info["build_date"]} {info["build_time"]}   FS{info["fs_ver"]}/NV{info["nv_ver"]}  BL{info["bl_ver"]}',
+            f'EFS {info["efs_size"]:,} ({info["part_num"]}개)   secure {info["secure_model"]} / {info["secure_msm"]}',
+            f'IMEI {info["imei"]}',
+        ]
+    else:
+        lines = ['[기기] phoneinfo 없음']
+    print()
+    for ln in lines:
+        print(ln.rjust(w) if len(ln) < w else ln)
+    print('─' * w)
+
+
 def cmd_menu(a):
     parts = read_gpt(a.gpt)
     backupdir = a.backupdir or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backup')
@@ -585,14 +604,15 @@ def cmd_menu(a):
     pdl.start_mode()
     pdl.command(DL_START)          # one download session; ends only on reboot
     print('연결됨.')
+    info = read_phoneinfo(pdl, parts['phoneinfo'][0]) if 'phoneinfo' in parts else None
 
     while True:
+        _print_device_header(info)
         sel = _ask('메인 메뉴:', [
             ('1', '파티션 플래시'),
             ('2', '파티션 백업'),
-            ('3', '기기정보 읽기'),
-            ('4', 'EFS 백업/복원 (modemst1 / modemst2 / fsg)'),
-            ('5', '리붓'),
+            ('3', 'EFS 백업/복원 (modemst1 / modemst2 / fsg)'),
+            ('4', '리붓'),
         ])
         if sel == '1':
             name = _pick_partition(parts)
@@ -623,21 +643,6 @@ def cmd_menu(a):
             if _post_action(pdl, parts.get('misc', (None,))[0]):
                 return
         elif sel == '3':
-            if 'phoneinfo' not in parts:
-                print('  phoneinfo 파티션 없음'); continue
-            pi = read_phoneinfo(pdl, parts['phoneinfo'][0])
-            if not pi:
-                print('  phoneinfo 미설정(매직 없음)'); continue
-            print('\n  [기기 정보]')
-            print(f'    모델        : {pi["model"]}')
-            print(f'    바이너리버전: {pi["binary"]}')
-            print(f'    빌드        : {pi["build_date"]} {pi["build_time"]}')
-            print(f'    FS/NV 버전  : {pi["fs_ver"]} / {pi["nv_ver"]}')
-            print(f'    부트로더버전: {pi["bl_ver"]}')
-            print(f'    EFS 크기    : {pi["efs_size"]:,}  (파티션 {pi["part_num"]}개)')
-            print(f'    secure model: {pi["secure_model"]}   msm_id: {pi["secure_msm"]}')
-            print(f'    IMEI        : {pi["imei"]}')
-        elif sel == '4':
             sub = _ask('EFS:', [('1', 'EFS 백업 (3개 파티션 → 폴더)'),
                                  ('2', 'EFS 복원 (폴더 → 3개 파티션)'), ('0', '뒤로')])
             if sub == '0':
@@ -668,7 +673,7 @@ def cmd_menu(a):
                 print('  EFS 복원 완료.')
             if _post_action(pdl, parts.get('misc', (None,))[0]):
                 return
-        elif sel == '5':
+        elif sel == '4':
             if reboot_menu(pdl, parts):
                 return
 
