@@ -606,7 +606,7 @@ def _print_device_header(info):
         lines = [
             f'[기기] 모델 {info["model"]}   바이너리 {info["binary"]}',
             f'빌드 {info["build_date"]} {info["build_time"]}   FS{info["fs_ver"]}/NV{info["nv_ver"]}  BL{info["bl_ver"]}',
-            f'EFS {info["efs_size"]:,} ({info["part_num"]}개)   secure {info["secure_model"]} / {info["secure_msm"]}',
+            f'EFS {info["efs_size"]:,} ({info["part_num"]}개)   보안모델 {info["secure_model"]}   시리얼 {info["secure_msm"]}',
             f'IMEI {info["imei"] or "N/A (보안영역, PDL 조회 불가)"}',
         ]
     else:
