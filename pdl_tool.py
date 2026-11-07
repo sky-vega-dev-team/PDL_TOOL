@@ -440,6 +440,12 @@ def flash_one(pdl, sid, name, path, pbytes=None, verbose=False):
     return stored, ck
 
 
+def erase_partition(pdl, sid, name):
+    """Erase a whole partition (DL_ERASE). erase_size 0xFFFFFFFF > MAX_TX_DATA_SIZE makes
+    the device erase the entire partition by section id."""
+    pdl.command(DL_ERASE, sid, name.encode(), start=0, end=0xFFFFFFFF)
+
+
 def backup_partition(pdl, sid, name, out_path, verbose=False):
     """Read a whole partition back from the phone and write it to out_path.
     Verifies every chunk's checksum and the device's overall checksum."""
@@ -474,7 +480,52 @@ def read_phoneinfo(pdl, sid):
     s = lambda b: b.split(b'\0')[0].decode('latin1', 'replace').strip()
     return dict(version=f[0], model=s(f[1]), binary=s(f[2]), fs_ver=f[3], nv_ver=f[4],
                 build_date=s(f[5]), build_time=s(f[6]), bl_ver=f[7], efs_size=f[9],
-                part_num=f[10], imei=f[13].hex(), secure_model=f[17].hex(), secure_msm=f[18].hex())
+                part_num=f[10], imei=_decode_imei(f[13]), secure_model=f[17].hex(), secure_msm=f[18].hex())
+
+
+def _decode_imei(raw):
+    """phoneinfo.Imei[15]. On this device it is a runtime-only field (the real IMEI lives in
+    the secure area / is returned by the AT*PHONEINFO query), so a PDL partition read sees
+    zeros -> report '' (the real IMEI is read from the rawdata backup instead, see read_imei)."""
+    if not any(raw):
+        return ''
+    if all(0x30 <= b <= 0x39 for b in raw):          # ASCII digits
+        return raw.decode('ascii')
+    if all(b <= 9 for b in raw):                      # digit values
+        return ''.join(str(b) for b in raw)
+    return raw.hex()
+
+
+# Non-secure IMEI backup inside the "rawdata" partition (sky_rawdata.h: NON_SECURE_IMEI_START),
+# written from SSECLIB_ReadImei: struct { u32 magic 0x55667788; u8 backup_imei[9]; ... }.
+IMEI_MAGIC = b'\x88\x77\x66\x55'          # 0x55667788 little-endian
+
+
+def _decode_imei_backup(b9):
+    """9-byte NV IMEI (GSM 03.03): [0x08][digit1<<4 | 0x0A][2 digits/byte, low nibble first]."""
+    if len(b9) < 9 or b9[0] != 0x08:
+        return None
+    digits = [b9[1] >> 4]
+    for byte in b9[2:9]:
+        digits.append(byte & 0x0F)
+        digits.append(byte >> 4)
+    digits = digits[:15]
+    if any(d > 9 for d in digits):
+        return None
+    return ''.join(str(d) for d in digits)
+
+
+def read_imei(pdl, rawdata_sid, window=0x80000):
+    """Read the device IMEI from the non-secure backup in the rawdata partition.
+    Scans the first `window` bytes for the magic and decodes the 9-byte IMEI after it."""
+    data = pdl.read_region(rawdata_sid, 0, window)
+    i = data.find(IMEI_MAGIC)
+    while i != -1:
+        imei = _decode_imei_backup(data[i + 4:i + 4 + 9])
+        if imei:
+            return imei
+        i = data.find(IMEI_MAGIC, i + 1)
+    return None
 
 
 # ------------------------------------------------------------------ interactive menu
@@ -556,7 +607,7 @@ def _print_device_header(info):
             f'[기기] 모델 {info["model"]}   바이너리 {info["binary"]}',
             f'빌드 {info["build_date"]} {info["build_time"]}   FS{info["fs_ver"]}/NV{info["nv_ver"]}  BL{info["bl_ver"]}',
             f'EFS {info["efs_size"]:,} ({info["part_num"]}개)   secure {info["secure_model"]} / {info["secure_msm"]}',
-            f'IMEI {info["imei"]}',
+            f'IMEI {info["imei"] or "N/A (보안영역, PDL 조회 불가)"}',
         ]
     else:
         lines = ['[기기] phoneinfo 없음']
@@ -579,14 +630,20 @@ def cmd_menu(a):
     pdl.command(DL_START)          # one download session; ends only on reboot
     print('연결됨.')
     info = read_phoneinfo(pdl, parts['phoneinfo'][0]) if 'phoneinfo' in parts else None
+    if info and not info['imei'] and 'rawdata' in parts:     # 실제 IMEI는 rawdata 백업에서
+        try:
+            info['imei'] = read_imei(pdl, parts['rawdata'][0]) or ''
+        except Exception:
+            pass
 
     while True:
         _print_device_header(info)
         sel = _ask('메인 메뉴:', [
             ('1', '파티션 플래시'),
             ('2', '파티션 백업'),
-            ('3', 'EFS 백업/복원 (modemst1 / modemst2 / fsg)'),
-            ('4', '리붓'),
+            ('3', '파티션 지우기'),
+            ('4', 'EFS 백업/복원 (modemst1 / modemst2 / fsg)'),
+            ('5', '리붓'),
         ])
         if sel == '1':
             name = _pick_partition(parts)
@@ -617,6 +674,22 @@ def cmd_menu(a):
             if _post_action(pdl, parts.get('misc', (None,))[0]):
                 return
         elif sel == '3':
+            name = _pick_partition(parts)
+            if not name:
+                continue
+            sid, _s, pb = parts[name]
+            prot = parts.get('phoneinfo', (13,))[0]       # 부트로더/보안 파티션 보호 (sid <= phoneinfo)
+            if sid <= prot:
+                print(f'  보호된 파티션 (sid {sid} ≤ {prot}, 부트로더/보안 영역) — 지울 수 없습니다')
+                continue
+            print(f'  경고: {name} (sid {sid}, {pb:,} bytes) 전체를 지웁니다. 되돌릴 수 없습니다.')
+            if input(f'  지우려면 파티션 이름 "{name}" 그대로 입력> ').strip() != name:
+                print('  취소'); continue
+            erase_partition(pdl, sid, name)
+            print(f'  {name} 지움(erased).')
+            if _post_action(pdl, parts.get('misc', (None,))[0]):
+                return
+        elif sel == '4':
             sub = _ask('EFS:', [('1', 'EFS 백업 (3개 파티션 → 폴더)'),
                                  ('2', 'EFS 복원 (폴더 → 3개 파티션)'), ('0', '뒤로')])
             if sub == '0':
@@ -647,7 +720,7 @@ def cmd_menu(a):
                 print('  EFS 복원 완료.')
             if _post_action(pdl, parts.get('misc', (None,))[0]):
                 return
-        elif sel == '4':
+        elif sel == '5':
             if reboot_menu(pdl, parts):
                 return
 
