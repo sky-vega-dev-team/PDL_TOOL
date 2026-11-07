@@ -510,16 +510,6 @@ def _pick_partition(parts):
         print('  잘못된 번호')
 
 
-def _adb_reboot(mode_arg, label):
-    import subprocess
-    print(f'\n[{label}] PDL 모드에서는 직접 설정할 수 없습니다 '
-          '(리부팅 사유가 eMMC가 아니라 IMEM 레지스터에 저장됨).')
-    print('일반 부팅 후 OS가 올라오면 adb로 해당 모드로 재부팅합니다. (adb/USB 디버깅 필요)')
-    if input('진행할까요? [y/N] ').strip().lower() not in ('y', 'yes'):
-        return False
-    return mode_arg  # caller finishes PDL (normal boot) then runs adb
-
-
 def _post_action(pdl, misc_sid):
     """After a flash/backup: offer normal reboot or return to the main menu."""
     sel = _ask('작업 완료. 다음 동작:', [
@@ -539,9 +529,6 @@ def reboot_menu(pdl, parts):
     sel = _ask('리붓 메뉴:', [
         ('1', '일반부팅'),
         ('2', '리커버리부팅'),
-        ('3', '부트로더(fastboot) 부팅'),
-        ('4', 'EDL(9008) 부팅'),
-        ('5', 'PDL 부팅'),
         ('0', '뒤로'),
     ])
     if sel == '0':
@@ -556,19 +543,6 @@ def reboot_menu(pdl, parts):
         write_bcb_recovery(pdl, misc_sid)
         print('misc BCB="boot-recovery" 기록. 리커버리로 리부팅합니다.')
         pdl.finish()
-        return True
-    # bootloader / edl / pdl: not settable from PDL -> normal boot, then adb
-    arg = {'3': ('bootloader', '부트로더'), '4': ('edl', 'EDL'), '5': ('oem-33', 'PDL')}[sel]
-    if _adb_reboot(arg[0], arg[1]):
-        pdl.finish()
-        print('일반부팅 중... OS 부팅 후 adb로 전환합니다.')
-        import subprocess
-        try:
-            subprocess.run(['adb', 'wait-for-device'], timeout=180, check=False)
-            subprocess.run(['adb', 'reboot', arg[0]], timeout=30, check=False)
-            print(f'adb reboot {arg[0]} 전송됨.')
-        except Exception as e:
-            print(f'adb 전환 실패: {e}\n부팅 후 직접 실행하세요:  adb reboot {arg[0]}')
         return True
     return False
 
