@@ -1,0 +1,8 @@
+# 백업 결과물 (레이아웃만 커밋, 덤프 바이너리는 제외)
+backup/*
+!backup/.gitkeep
+*.img
+*.bin
+*.pdl
+__pycache__/
+*.pyc
